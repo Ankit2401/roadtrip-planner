@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // Use environment variable for API URL with fallback
-const API_BASE_URL = 'https://roadtrip-planner-3.onrender.com';
+const API_BASE_URL = 'https://roadtrip-planner-3.onrender.com/api';
 
 const API = axios.create({
   baseURL: API_BASE_URL,
