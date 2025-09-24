@@ -1,0 +1,2216 @@
+
+
+/* ========= File: Config\Cloudinary.js ========= */
+
+const cloudinary = require('cloudinary').v2;
+require('dotenv').config();
+
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Test connection
+const testCloudinaryConnection = async () => {
+    try {
+        await cloudinary.api.ping();
+        console.log('✅ Cloudinary connected successfully!');
+    } catch (error) {
+        console.error('❌ Cloudinary connection error:', error.message);
+    }
+};
+
+
+if (process.env.NODE_ENV !== 'test') {
+    testCloudinaryConnection();
+}
+
+module.exports = cloudinary;
+
+
+/* ========= File: Config\Multer.js ========= */
+
+const multer = require('multer');
+
+// Memory storage for temporary file handling
+const storage = multer.memoryStorage();
+
+// File filter function
+const fileFilter = (req, file, cb) => {
+    // Check file type
+    if (file.mimetype.startsWith('image/')) {
+        cb(null, true);
+    } else {
+        cb(new Error('Only image files are allowed!'), false);
+    }
+};
+
+// Configure multer
+const upload = multer({ 
+    storage: storage,
+    fileFilter: fileFilter,
+    limits: {
+        fileSize: 10 * 1024 * 1024, // 10MB limit per file
+        files: 5 // Maximum 5 files
+    }
+});
+
+// Error handling middleware for multer
+const handleMulterError = (err, req, res, next) => {
+    if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({ message: 'File too large. Maximum size is 10MB.' });
+        } else if (err.code === 'LIMIT_FILE_COUNT') {
+            return res.status(400).json({ message: 'Too many files. Maximum is 5 files.' });
+        } else if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+            return res.status(400).json({ message: 'Unexpected file field.' });
+        }
+    } else if (err.message === 'Only image files are allowed!') {
+        return res.status(400).json({ message: err.message });
+    }
+    next(err);
+};
+
+module.exports = upload;
+module.exports.handleMulterError = handleMulterError;
+
+
+/* ========= File: Controllers\Auth.Controllers.js ========= */
+
+const User = require('../Models/User.Models.js');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
+// Enhanced input validation helper
+const validateFields = (fields) => {
+    for (const [key, value] of Object.entries(fields)) {
+        if (!value || String(value).trim() === '') {
+            return { isValid: false, message: `${key.charAt(0).toUpperCase() + key.slice(1)} is required` };
+        }
+    }
+    return { isValid: true };
+};
+
+// User Registration
+exports.register = async (req, res) => {
+    try {
+        const { name, username, email, password } = req.body;
+
+        const validation = validateFields({ name, username, email, password });
+        if (!validation.isValid) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email.toLowerCase())) {
+            return res.status(400).json({ message: 'Please enter a valid email address' });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({ message: 'Password must be at least 6 characters long' });
+        }
+
+        const normalizedEmail = email.toLowerCase().trim();
+        const normalizedUsername = username.toLowerCase().trim();
+
+        const existingUser = await User.findOne({
+            $or: [{ email: normalizedEmail }, { username: normalizedUsername }]
+        });
+
+        if (existingUser) {
+            const field = existingUser.email === normalizedEmail ? 'Email' : 'Username';
+            return res.status(409).json({ message: `${field} already exists` });
+        }
+
+        const saltRounds = 12;
+        const salt = await bcrypt.genSalt(saltRounds);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const newUser = new User({
+            name: name.trim(),
+            username: normalizedUsername,
+            email: normalizedEmail,
+            password: hashedPassword,
+        });
+
+        await newUser.save();
+
+        const jwtPayload = { user: { id: newUser.id } };
+        const token = jwt.sign(jwtPayload, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+        return res.status(201).json({
+            message: 'User registered successfully',
+            token,
+            user: {
+                id: newUser.id,
+                name: newUser.name,
+                username: newUser.username,
+                email: newUser.email
+            }
+        });
+
+    } catch (error) {
+        console.error('Registration error:', error.message);
+        return res.status(500).json({ message: 'Server error during registration' });
+    }
+};
+
+// User Login
+exports.login = async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        const validation = validateFields({ email, password });
+        if (!validation.isValid) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        const normalizedEmail = email.toLowerCase().trim();
+        const user = await User.findOne({ email: normalizedEmail });
+
+        if (!user) {
+            return res.status(400).json({ message: 'Invalid email or password' });
+        }
+
+        const isPasswordMatch = await bcrypt.compare(password, user.password);
+        if (!isPasswordMatch) {
+            return res.status(400).json({ message: 'Invalid email or password' });
+        }
+
+        const jwtPayload = { user: { id: user.id } };
+        const token = jwt.sign(jwtPayload, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+        return res.json({
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                username: user.username,
+                email: user.email
+            }
+        });
+
+    } catch (error) {
+        console.error('Login error:', error.message);
+        return res.status(500).json({ message: 'Server error during login' });
+    }
+};
+
+// Get current user profile
+exports.getProfile = async (req, res) => {
+    try {
+        const userProfile = await User.findById(req.user.id).select('-password');
+        if (!userProfile) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        return res.json(userProfile);
+    } catch (error) {
+        console.error('Get profile error:', error.message);
+        return res.status(500).json({ message: 'Server error' });
+    }
+};
+
+
+/* ========= File: Controllers\Comment.Controllers.js ========= */
+
+const Comment = require('../Models/Comment.Models.js');
+const RoadTrip = require('../Models/RoadTrip.Models.js');
+
+// Helper function for consistent server error responses
+const handleServerError = (res, err, message) => {
+    console.error(`${message}:`, err.message);
+    res.status(500).json({ message, error: err.message });
+};
+
+// Input validation
+const validateComment = (text) => {
+    if (!text || text.trim() === '') {
+        return { isValid: false, message: 'Comment text cannot be empty.' };
+    }
+    if (text.trim().length > 500) {
+        return { isValid: false, message: 'Comment text must be less than 500 characters.' };
+    }
+    return { isValid: true };
+};
+
+// Get all comments for a trip with pagination
+exports.getCommentsForTrip = async (req, res) => {
+    try {
+        const { tripId } = req.params;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const [comments, totalComments] = await Promise.all([
+            Comment.find({ roadTrip: tripId })
+                .populate('user', 'username name')
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit),
+            Comment.countDocuments({ roadTrip: tripId })
+        ]);
+
+        const totalPages = Math.ceil(totalComments / limit);
+
+        res.json({
+            comments,
+            pagination: {
+                currentPage: page,
+                totalPages,
+                totalComments,
+                hasNext: page < totalPages,
+                hasPrev: page > 1,
+            }
+        });
+    } catch (err) {
+        handleServerError(res, err, 'Error fetching comments');
+    }
+};
+
+// Create a new comment
+exports.createComment = async (req, res) => {
+    try {
+        const { text } = req.body;
+        const { tripId } = req.params;
+        const userId = req.user.id;
+
+        const validation = validateComment(text);
+        if (!validation.isValid) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        const roadTrip = await RoadTrip.findById(tripId);
+        if (!roadTrip) {
+            return res.status(404).json({ message: 'Trip not found.' });
+        }
+
+        const newComment = new Comment({
+            text: text.trim(),
+            user: userId,
+            roadTrip: tripId,
+        });
+
+        const savedComment = await newComment.save();
+        await savedComment.populate('user', 'username name');
+
+        // Add comment to the trip's comments array
+        roadTrip.comments.unshift(savedComment._id);
+        await roadTrip.save();
+
+        res.status(201).json(savedComment);
+    } catch (err) {
+        handleServerError(res, err, 'Error creating comment');
+    }
+};
+
+// Update comment
+exports.updateComment = async (req, res) => {
+    try {
+        const { text } = req.body;
+        const { commentId } = req.params;
+        const userId = req.user.id;
+
+        const validation = validateComment(text);
+        if (!validation.isValid) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        const commentToUpdate = await Comment.findById(commentId);
+        if (!commentToUpdate) {
+            return res.status(404).json({ message: 'Comment not found.' });
+        }
+
+        // Check if the user is the owner of the comment
+        if (commentToUpdate.user.toString() !== userId) {
+            return res.status(403).json({ message: 'Not authorized to update this comment.' });
+        }
+
+        commentToUpdate.text = text.trim();
+        await commentToUpdate.save();
+        await commentToUpdate.populate('user', 'username name');
+
+        res.json(commentToUpdate);
+    } catch (err) {
+        handleServerError(res, err, 'Error updating comment');
+    }
+};
+
+// Delete comment
+exports.deleteComment = async (req, res) => {
+    try {
+        const { commentId } = req.params;
+        const userId = req.user.id;
+
+        const commentToDelete = await Comment.findById(commentId);
+        if (!commentToDelete) {
+            return res.status(404).json({ message: 'Comment not found.' });
+        }
+
+        // Check if the user is the owner of the comment
+        if (commentToDelete.user.toString() !== userId) {
+            return res.status(403).json({ message: 'Not authorized to delete this comment.' });
+        }
+
+        // Concurrently remove the comment and update the road trip
+        await Promise.all([
+            Comment.findOneAndDelete({ _id: commentId }),
+            RoadTrip.findByIdAndUpdate(commentToDelete.roadTrip, {
+                $pull: { comments: commentId }
+            })
+        ]);
+
+        res.status(204).send();
+    } catch (err) {
+        handleServerError(res, err, 'Error deleting comment');
+    }
+};
+
+
+/* ========= File: Controllers\Places.Controllers.js ========= */
+
+const axios = require('axios');
+
+// Cache for places data
+const placesCache = new Map();
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+// Helper function to handle API requests with robust error handling
+const fetchGeoApiData = async (url, params, errorMessage, res) => {
+    try {
+        const response = await axios.get(url, { params, timeout: 5000 });
+        if (response.data.features && response.data.features.length > 0) {
+            return response.data;
+        }
+        res.status(404).json({ message: errorMessage });
+        return null;
+    } catch (error) {
+        console.error('Geoapify API Error:', error.response?.data || error.message);
+        if (error.code === 'ECONNABORTED') {
+            res.status(408).json({ message: 'Request to Geoapify timed out' });
+        } else {
+            res.status(500).json({ message: 'Failed to communicate with Geoapify service' });
+        }
+        return null;
+    }
+};
+
+exports.getNearbyPlaces = async (req, res) => {
+    const { location, radius = 5000, limit = 6 } = req.query;
+
+    if (!location || location.trim() === '') {
+        return res.status(400).json({ message: 'Location query parameter is required.' });
+    }
+
+    const cacheKey = `${location.toLowerCase()}-${radius}-${limit}`;
+    const cachedData = placesCache.get(cacheKey);
+
+    if (cachedData && Date.now() - cachedData.timestamp < CACHE_TTL) {
+        return res.status(200).json(cachedData.data);
+    }
+
+    const apiKey = process.env.GEOAPIFY_API_KEY;
+    if (!apiKey) {
+        return res.status(500).json({ message: 'Geoapify API key is not configured on the server.' });
+    }
+
+    try {
+        const geoData = await fetchGeoApiData(
+            `https://api.geoapify.com/v1/geocode/search`,
+            { text: location, apiKey, limit: 1 },
+            `Could not find coordinates for location: ${location}`,
+            res
+        );
+
+        if (!geoData) {
+            return;
+        }
+
+        const { lon, lat } = geoData.features[0].properties;
+
+        const placesData = await fetchGeoApiData(
+            `https://api.geoapify.com/v2/places`,
+            {
+                categories: 'tourism.attraction,entertainment,catering.restaurant,accommodation',
+                filter: `circle:${lon},${lat},${radius}`,
+                bias: `proximity:${lon},${lat}`,
+                limit: limit,
+                apiKey
+            },
+            `No nearby places found for ${location}`,
+            res
+        );
+
+        if (!placesData) {
+            return;
+        }
+
+        const formattedPlaces = placesData.features.map(place => {
+            const { place_id, name, address_line2, address_line1, categories, distance, rating, opening_hours } = place.properties;
+            const primaryCategory = categories?.find(c => c.startsWith('tourism')) || categories?.[0] || 'Attraction';
+            const coordinates = place.geometry.coordinates;
+
+            return {
+                id: place_id,
+                name: name || 'Unnamed Place',
+                address: address_line2 || address_line1 || '',
+                category: primaryCategory,
+                coordinates,
+                distance,
+                rating,
+                opening_hours
+            };
+        }).filter(place => place.name !== 'Unnamed Place');
+
+        const finalResult = {
+            location: geoData.features[0].properties.formatted,
+            coordinates: [lon, lat],
+            places: formattedPlaces
+        };
+
+        placesCache.set(cacheKey, { data: finalResult, timestamp: Date.now() });
+
+        res.json(finalResult);
+    } catch (error) {
+        console.error('Unexpected error in getNearbyPlaces:', error);
+        res.status(500).json({ message: 'An unexpected server error occurred.' });
+    }
+};
+
+
+/* ========= File: Controllers\Review.Controllers.js ========= */
+
+const Review = require('../Models/Review.Models');
+
+// READ all reviews for the authenticated user
+exports.getUserReviews = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const [userReviews, totalCount] = await Promise.all([
+      Review.find({ user: userId })
+        .populate('roadTrip', 'title startDate')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Review.countDocuments({ user: userId })
+    ]);
+
+    const totalPages = Math.ceil(totalCount / limit);
+
+    res.status(200).json({
+      reviews: userReviews,
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalReviews: totalCount,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching user reviews:', error);
+    res.status(500).json({ message: 'Error fetching user reviews', error: error.message });
+  }
+};
+
+// CREATE review
+exports.createReview = async (req, res) => {
+  try {
+    const { tripId } = req.params;
+    const { rating, comment } = req.body;
+
+    const review = new Review({
+      roadTrip: tripId,
+      user: req.user.id,
+      rating,
+      comment,
+    });
+
+    await review.save();
+    res.status(201).json(review);
+  } catch (error) {
+    res.status(500).json({ message: 'Error creating review', error: error.message });
+  }
+};
+
+// UPDATE review
+exports.updateReview = async (req, res) => {
+  try {
+    const { reviewId } = req.params;
+    const { rating, comment } = req.body;
+
+    const review = await Review.findOneAndUpdate(
+      { _id: reviewId, user: req.user.id },
+      { rating, comment },
+      { new: true }
+    );
+
+    if (!review) {
+      return res.status(404).json({ message: 'Review not found or not yours' });
+    }
+
+    res.status(200).json(review);
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating review', error: error.message });
+  }
+};
+
+// DELETE review
+exports.deleteReview = async (req, res) => {
+  try {
+    const { reviewId } = req.params;
+
+    const review = await Review.findOneAndDelete({ _id: reviewId, user: req.user.id });
+
+    if (!review) {
+      return res.status(404).json({ message: 'Review not found or not yours' });
+    }
+
+    res.status(200).json({ message: 'Review deleted' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting review', error: error.message });
+  }
+};
+
+
+
+/* ========= File: Controllers\Roadtrip.Controllers.js ========= */
+
+const RoadTrip = require('../Models/RoadTrip.Models.js');
+const cloudinary = require('../config/cloudinary.js'); 
+
+// Input validation helper
+const validateTripInput = (title, description) => {
+    if (!title || title.trim().length < 3) {
+        return { isValid: false, message: 'Title must be at least 3 characters long' };
+    }
+    if (!description || description.trim().length < 10) {
+        return { isValid: false, message: 'Description must be at least 10 characters long' };
+    }
+    return { isValid: true };
+};
+
+// Create a new road trip
+exports.createRoadTrip = async (req, res) => {
+    try {
+        const { title, description, createdBy, route } = req.body;
+
+        // Input validation
+        const validation = validateTripInput(title, description);
+        if (!validation.isValid) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        let imageUrls = [];
+
+        if (req.files && req.files.length > 0) {
+            try {
+                const uploadPromises = req.files.map(file => {
+                    const b64 = Buffer.from(file.buffer).toString("base64");
+                    let dataURI = "data:" + file.mimetype + ";base64," + b64;
+                    return cloudinary.uploader.upload(dataURI, { 
+                        folder: "roadtrips",
+                        transformation: [
+                            { width: 1200, height: 800, crop: "limit" },
+                            { quality: "auto:good" }
+                        ]
+                    });
+                });
+                const results = await Promise.all(uploadPromises);
+                imageUrls = results.map(result => result.secure_url);
+            } catch (uploadError) {
+                console.error("Image upload error:", uploadError);
+                return res.status(500).json({ message: 'Error uploading images' });
+            }
+        }
+
+        const parsedRoute = typeof route === 'string' ? JSON.parse(route) : route;
+
+        const newTrip = new RoadTrip({
+            title: title.trim(),
+            description: description.trim(),
+            createdBy,
+            route: parsedRoute,
+            coverImage: imageUrls[0] || '/default_cover_image.jpg', 
+            images: imageUrls
+        });
+
+        const trip = await newTrip.save();
+        await trip.populate('createdBy', 'username name');
+        res.status(201).json(trip);
+
+    } catch (err) {
+        console.error("Create trip error:", err);
+        res.status(500).json({ message: 'Error creating trip', error: err.message });
+    }
+};
+
+// Update road trip
+exports.updateRoadTrip = async (req, res) => {
+    try {
+        const { title, description, route } = req.body;
+
+        // Input validation
+        const validation = validateTripInput(title, description);
+        if (!validation.isValid) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        let parsedRoute = route;
+        if (route && typeof route === 'string') {
+            try {
+                parsedRoute = JSON.parse(route);
+            } catch (e) {
+                return res.status(400).json({ message: 'Invalid route data format.' });
+            }
+        }
+
+        const updateData = {
+            title: title.trim(),
+            description: description.trim(),
+            route: parsedRoute 
+        };
+
+        if (req.files && req.files.length > 0) {
+            try {
+                const uploadPromises = req.files.map(file => {
+                    const b64 = Buffer.from(file.buffer).toString("base64");
+                    let dataURI = "data:" + file.mimetype + ";base64," + b64;
+                    return cloudinary.uploader.upload(dataURI, { 
+                        folder: "roadtrips",
+                        transformation: [
+                            { width: 1200, height: 800, crop: "limit" },
+                            { quality: "auto:good" }
+                        ]
+                    });
+                });
+                const results = await Promise.all(uploadPromises);
+                const imageUrls = results.map(result => result.secure_url);
+
+                if (imageUrls.length > 0) {
+                   updateData.images = imageUrls; 
+                   updateData.coverImage = imageUrls[0]; 
+                }
+            } catch (uploadError) {
+                console.error("Image upload error:", uploadError);
+                return res.status(500).json({ message: 'Error uploading images' });
+            }
+        }
+
+        const trip = await RoadTrip.findByIdAndUpdate(
+            req.params.id,
+            { $set: updateData },
+            { new: true }
+        ).populate('createdBy', 'username name');
+
+        if (!trip) {
+            return res.status(404).json({ message: 'Trip not found' });
+        }
+        res.json(trip);
+
+    } catch (err) {
+        console.error("Update trip error:", err);
+        res.status(500).json({ message: 'Error updating trip', error: err.message });
+    }
+};
+
+// READ all road trips with pagination
+exports.getAllRoadTrips = async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 12;
+        const skip = (page - 1) * limit;
+
+        const trips = await RoadTrip.find()
+            .populate('createdBy', 'username name')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
+
+        const total = await RoadTrip.countDocuments();
+
+        res.status(200).json({
+            trips,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(total / limit),
+                totalTrips: total,
+                hasNext: page < Math.ceil(total / limit),
+                hasPrev: page > 1
+            }
+        });
+    } catch (error) {
+        console.error("Get all trips error:", error);
+        res.status(500).json({ message: 'Error fetching trips', error: error.message });
+    }
+};
+
+// DELETE a road trip by ID
+exports.deleteRoadTrip = async (req, res) => {
+    try {
+        const trip = await RoadTrip.findById(req.params.id);
+        if (!trip) {
+            return res.status(404).json({ message: 'Trip not found' });
+        }
+
+        // Check if user owns the trip
+        if (trip.createdBy.toString() !== req.user.id) {
+            return res.status(403).json({ message: 'Not authorized to delete this trip' });
+        }
+
+        await RoadTrip.findByIdAndDelete(req.params.id);
+        res.status(204).send();
+    } catch (error) {
+        console.error("Delete trip error:", error);
+        res.status(500).json({ message: 'Error deleting trip', error: error.message });
+    }
+};
+
+// GET a single road trip by its ID
+exports.getTripById = async (req, res) => {
+    try {
+        const trip = await RoadTrip.findById(req.params.id)
+            .populate('createdBy', 'username name')
+            .populate({
+                path: 'comments',
+                populate: { path: 'user', select: 'username name' }
+            })
+            .populate({
+                path: 'reviews',
+                populate: { path: 'user', select: 'username name' }
+            });
+
+        if (!trip) {
+            return res.status(404).json({ message: 'Trip not found' });
+        }
+        res.status(200).json(trip);
+    } catch (error) {
+        console.error("Get trip by ID error:", error);
+        res.status(500).json({ message: 'Error fetching trip', error: error.message });
+    }
+};
+
+// Like/Unlike a trip
+exports.likeTrip = async (req, res) => {
+    try {
+        const trip = await RoadTrip.findById(req.params.id);
+        if (!trip) {
+            return res.status(404).json({ message: 'Trip not found' });
+        }
+
+        const userLiked = trip.likes.some(like => like.toString() === req.user.id);
+
+        if (userLiked) {
+            trip.likes = trip.likes.filter(like => like.toString() !== req.user.id);
+        } else {
+            trip.likes.push(req.user.id);
+        }
+
+        await trip.save();
+        res.json({ likes: trip.likes, liked: !userLiked });
+
+    } catch (err) {
+        console.error("Like trip error:", err);
+        res.status(500).json({ message: 'Error liking trip', error: err.message });
+    }
+};
+
+// GET all trips for the logged-in user
+exports.getMyTrips = async (req, res) => {
+    try {
+        const trips = await RoadTrip.find({ createdBy: req.user.id })
+            .populate('createdBy', 'username name')
+            .sort({ createdAt: -1 });
+        res.json(trips);
+    } catch (err) {
+        console.error("Get my trips error:", err);
+        res.status(500).json({ message: 'Error fetching your trips', error: err.message });
+    }
+};
+
+// Search trips
+exports.searchTrips = async (req, res) => {
+    try {
+        const { q } = req.query;
+        if (!q) {
+            return res.status(400).json({ message: 'Search query is required' });
+        }
+
+        const trips = await RoadTrip.find({
+            $or: [
+                { title: { $regex: q, $options: 'i' } },
+                { description: { $regex: q, $options: 'i' } },
+                { 'route.locationName': { $regex: q, $options: 'i' } }
+            ]
+        }).populate('createdBy', 'username name')
+          .sort({ createdAt: -1 })
+          .limit(20);
+
+        res.json(trips);
+    } catch (error) {
+        console.error("Search trips error:", error);
+        res.status(500).json({ message: 'Error searching trips', error: error.message });
+    }
+};
+
+
+/* ========= File: Controllers\Route.Controllers.js ========= */
+
+const axios = require('axios');
+const polyline = require('@mapbox/polyline');
+
+// Cache for route data
+const routeCache = new Map();
+const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+// Helper function for consistent error responses
+const handleServerError = (res, err, message) => {
+    console.error(`${message}:`, err.response?.data || err.message);
+    if (err.code === 'ECONNABORTED') {
+        res.status(408).json({ message: 'Route service request timed out.' });
+    } else if (err.message.includes('Could not find coordinates')) {
+        res.status(404).json({ message: err.message });
+    } else {
+        res.status(500).json({ message: 'Error fetching route data.' });
+    }
+};
+
+// Helper function to get coordinates from a location name
+const getCoordinates = async (locationName, apiKey) => {
+    const geoResponse = await axios.get(
+        `https://api.openrouteservice.org/geocode/search`,
+        {
+            params: { api_key: apiKey, text: locationName, size: 1 },
+            timeout: 5000,
+        }
+    );
+
+    if (!geoResponse.data.features || geoResponse.data.features.length === 0) {
+        throw new Error(`Could not find coordinates for "${locationName}".`);
+    }
+    return geoResponse.data.features[0].geometry.coordinates;
+};
+
+// Helper function to process and format route data
+const processRouteData = (route, startLocationName, endLocationName, startCoords, endCoords) => {
+    let decodedPolyline = [];
+    try {
+        decodedPolyline = polyline.decode(route.geometry);
+    } catch (decodeError) {
+        console.error('Polyline decode error:', decodeError.message);
+        decodedPolyline = [[startCoords[1], startCoords[0]], [endCoords[1], endCoords[0]]];
+    }
+
+    const instructions = route.segments?.[0]?.steps?.map(step => ({
+        instruction: step.instruction,
+        distance: (step.distance / 1000).toFixed(2), // km
+        duration: (step.duration / 60).toFixed(1),   // minutes
+    })) || [];
+
+    return {
+        distance: (route.summary.distance / 1000).toFixed(2), // km
+        duration: (route.summary.duration / 3600).toFixed(2), // hours
+        polyline: decodedPolyline,
+        instructions,
+        startLocation: { name: startLocationName, coordinates: startCoords },
+        endLocation: { name: endLocationName, coordinates: endCoords },
+    };
+};
+
+exports.getRoute = async (req, res) => {
+    const { startLocationName, endLocationName, profile = 'driving-car' } = req.body;
+
+    if (!startLocationName || !endLocationName) {
+        return res.status(400).json({ message: 'Start and end location names are required.' });
+    }
+    if (startLocationName.trim() === endLocationName.trim()) {
+        return res.status(400).json({ message: 'Start and end locations cannot be the same.' });
+    }
+
+    const cacheKey = `${startLocationName.toLowerCase()}-${endLocationName.toLowerCase()}-${profile}`;
+    const cached = routeCache.get(cacheKey);
+
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+        return res.status(200).json(cached.data);
+    }
+
+    const apiKey = process.env.ORS_API_KEY;
+    if (!apiKey) {
+        return res.status(500).json({ message: 'OpenRouteService API key not configured on the server.' });
+    }
+
+    try {
+        const [startCoords, endCoords] = await Promise.all([
+            getCoordinates(startLocationName, apiKey),
+            getCoordinates(endLocationName, apiKey)
+        ]);
+
+        const routeResponse = await axios.post(
+            `https://api.openrouteservice.org/v2/directions/${profile}`,
+            { coordinates: [startCoords, endCoords] },
+            {
+                headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
+                timeout: 10000,
+            }
+        );
+
+        if (!routeResponse.data.routes || routeResponse.data.routes.length === 0) {
+            return res.status(404).json({ message: 'Route could not be calculated between these points.' });
+        }
+
+        const route = routeResponse.data.routes[0];
+        const processedData = processRouteData(route, startLocationName, endLocationName, startCoords, endCoords);
+
+        routeCache.set(cacheKey, { data: processedData, timestamp: Date.now() });
+
+        res.json(processedData);
+    } catch (error) {
+        handleServerError(res, error, 'Route Service Error');
+    }
+};
+
+
+/* ========= File: Controllers\User.Controllers.js ========= */
+
+const User = require('../Models/User.Models');
+const bcrypt = require('bcryptjs');
+
+// Helper function for consistent server error responses
+const handleServerError = (res, err, message) => {
+    console.error(`${message}:`, err.message);
+    res.status(500).json({ message, error: err.message });
+};
+
+// Input validation helper
+const validateUserInput = (data, isUpdate = false) => {
+    const { name, username, email, password } = data;
+
+    const nameLength = name?.trim().length;
+    const usernameLength = username?.trim().length;
+    const passwordLength = password?.length;
+    const emailIsValid = email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+    if (!isUpdate) {
+        if (!nameLength || nameLength < 2) return { isValid: false, message: 'Name must be at least 2 characters long.' };
+        if (!usernameLength || usernameLength < 3) return { isValid: false, message: 'Username must be at least 3 characters long.' };
+        if (!emailIsValid) return { isValid: false, message: 'Please enter a valid email address.' };
+        if (!passwordLength || passwordLength < 6) return { isValid: false, message: 'Password must be at least 6 characters long.' };
+    } else {
+        if (nameLength && nameLength < 2) return { isValid: false, message: 'Name must be at least 2 characters long.' };
+        if (usernameLength && usernameLength < 3) return { isValid: false, message: 'Username must be at least 3 characters long.' };
+        if (email && !emailIsValid) return { isValid: false, message: 'Please enter a valid email address.' };
+        if (passwordLength && passwordLength < 6) return { isValid: false, message: 'Password must be at least 6 characters long.' };
+    }
+
+    return { isValid: true };
+};
+
+// CREATE a new user (Signup)
+exports.createUser = async (req, res) => {
+    try {
+        const { name, username, email, password } = req.body;
+
+        const validation = validateUserInput(req.body);
+        if (!validation.isValid) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        const normalizedEmail = email.toLowerCase().trim();
+        const normalizedUsername = username.toLowerCase().trim();
+
+        const existingUser = await User.findOne({
+            $or: [{ email: normalizedEmail }, { username: normalizedUsername }]
+        });
+
+        if (existingUser) {
+            const field = existingUser.email === normalizedEmail ? 'Email' : 'Username';
+            return res.status(409).json({ message: `${field} already exists.` });
+        }
+
+        const salt = await bcrypt.genSalt(12);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const newUser = await User.create({
+            name: name.trim(),
+            username: normalizedUsername,
+            email: normalizedEmail,
+            password: hashedPassword
+        });
+
+        const userResponse = newUser.toObject();
+        delete userResponse.password;
+
+        res.status(201).json(userResponse);
+    } catch (error) {
+        if (error.code === 11000) {
+            const field = Object.keys(error.keyValue)[0];
+            return res.status(409).json({ message: `${field} already exists.` });
+        }
+        handleServerError(res, error, 'Error creating user');
+    }
+};
+
+// READ all users with pagination
+exports.getAllUsers = async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
+
+        const [users, totalCount] = await Promise.all([
+            User.find()
+                .select('-password')
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit),
+            User.countDocuments()
+        ]);
+
+        const totalPages = Math.ceil(totalCount / limit);
+
+        res.status(200).json({
+            users,
+            pagination: {
+                currentPage: page,
+                totalPages,
+                totalUsers: totalCount,
+                hasNext: page < totalPages,
+                hasPrev: page > 1,
+            }
+        });
+    } catch (error) {
+        handleServerError(res, error, 'Error fetching users');
+    }
+};
+
+// UPDATE a user by ID
+exports.updateUser = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updateData = { ...req.body };
+
+        const validation = validateUserInput(updateData, true);
+        if (!validation.isValid) {
+            return res.status(400).json({ message: validation.message });
+        }
+        
+        const existingUser = await User.findById(id);
+        if (!existingUser) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        if (updateData.password) {
+            const salt = await bcrypt.genSalt(12);
+            updateData.password = await bcrypt.hash(updateData.password, salt);
+        }
+
+        // Apply normalization for string fields
+        if (updateData.email) updateData.email = updateData.email.toLowerCase().trim();
+        if (updateData.username) updateData.username = updateData.username.toLowerCase().trim();
+        if (updateData.name) updateData.name = updateData.name.trim();
+
+        const updatedUser = await User.findByIdAndUpdate(
+            id,
+            { $set: updateData },
+            { new: true, runValidators: true }
+        ).select('-password');
+
+        res.status(200).json(updatedUser);
+    } catch (error) {
+        if (error.code === 11000) {
+            const field = Object.keys(error.keyValue)[0];
+            return res.status(409).json({ message: `${field} already exists.` });
+        }
+        handleServerError(res, error, 'Error updating user');
+    }
+};
+
+// DELETE a user by ID
+exports.deleteUser = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const deletedUser = await User.findByIdAndDelete(id);
+
+        if (!deletedUser) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        res.status(204).send();
+    } catch (error) {
+        handleServerError(res, error, 'Error deleting user');
+    }
+};
+
+// GET user profile
+exports.getUserProfile = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const user = await User.findById(id)
+            .select('-password')
+            .populate('createdTrips', 'title coverImage createdAt')
+            .populate('savedTrips', 'title coverImage createdAt');
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        res.status(200).json(user);
+    } catch (error) {
+        handleServerError(res, error, 'Error fetching user profile');
+    }
+};
+
+
+/* ========= File: Controllers\Weather.Controllers.js ========= */
+
+const axios = require('axios');
+
+// Cache for weather data (simple in-memory cache)
+const weatherCache = new Map();
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+// Helper function for consistent API requests and error handling
+const fetchWeatherData = async (url, res) => {
+    try {
+        const response = await axios.get(url, { timeout: 5000 });
+        return response.data;
+    } catch (error) {
+        console.error("Weather API error:", error.response?.data || error.message);
+        if (error.response?.status === 400) {
+            res.status(404).json({ message: 'Location not found.' });
+        } else if (error.code === 'ECONNABORTED') {
+            res.status(408).json({ message: 'Weather service request timed out.' });
+        } else {
+            res.status(500).json({ message: 'Failed to fetch weather data.' });
+        }
+        return null;
+    }
+};
+
+exports.getWeatherByLocation = async (req, res) => {
+    const { location } = req.query;
+
+    if (!location || location.trim() === '') {
+        return res.status(400).json({ message: 'Location query parameter is required.' });
+    }
+
+    const cacheKey = location.toLowerCase().trim();
+    const cachedData = weatherCache.get(cacheKey);
+
+    if (cachedData && Date.now() - cachedData.timestamp < CACHE_TTL) {
+        return res.status(200).json(cachedData.data);
+    }
+
+    const apiKey = process.env.WEATHER_API_KEY;
+    if (!apiKey) {
+        return res.status(500).json({ message: 'Weather API key is not configured on the server.' });
+    }
+
+    const apiUrl = `http://api.weatherapi.com/v1/current.json?key=${apiKey}&q=${encodeURIComponent(location)}&aqi=no`;
+
+    const responseData = await fetchWeatherData(apiUrl, res);
+    if (!responseData) {
+        return;
+    }
+
+    const weatherData = {
+        location: responseData.location.name,
+        region: responseData.location.region,
+        country: responseData.location.country,
+        temp_c: responseData.current.temp_c,
+        temp_f: responseData.current.temp_f,
+        condition: responseData.current.condition.text,
+        icon: responseData.current.condition.icon,
+        humidity: responseData.current.humidity,
+        wind_kph: responseData.current.wind_kph,
+        feels_like_c: responseData.current.feelslike_c,
+        last_updated: responseData.current.last_updated,
+    };
+
+    weatherCache.set(cacheKey, { data: weatherData, timestamp: Date.now() });
+    res.status(200).json(weatherData);
+};
+
+exports.getWeatherForecast = async (req, res) => {
+    const { location, days } = req.query;
+    const forecastDays = parseInt(days) || 3;
+
+    if (!location || location.trim() === '') {
+        return res.status(400).json({ message: 'Location is required.' });
+    }
+
+    if (forecastDays > 7) {
+        return res.status(400).json({ message: 'Forecast is limited to a maximum of 7 days.' });
+    }
+
+    const apiKey = process.env.WEATHER_API_KEY;
+    if (!apiKey) {
+        return res.status(500).json({ message: 'Weather API key is not configured on the server.' });
+    }
+
+    const apiUrl = `http://api.weatherapi.com/v1/forecast.json?key=${apiKey}&q=${encodeURIComponent(location)}&days=${forecastDays}&aqi=no&alerts=no`;
+
+    const responseData = await fetchWeatherData(apiUrl, res);
+    if (!responseData) {
+        return;
+    }
+
+    const forecastData = {
+        location: responseData.location.name,
+        current: responseData.current,
+        forecast: responseData.forecast.forecastday.map(day => ({
+            date: day.date,
+            day: {
+                maxtemp_c: day.day.maxtemp_c,
+                mintemp_c: day.day.mintemp_c,
+                condition: day.day.condition,
+                chance_of_rain: day.day.daily_chance_of_rain,
+            },
+        })),
+    };
+
+    res.status(200).json(forecastData);
+};
+
+
+/* ========= File: index.js ========= */
+
+const express = require('express');
+const mongoose = require('mongoose');
+require('dotenv').config();
+const cors = require('cors');
+
+// Route files import
+const userRoutes = require('./Routes/user.Routes.js');
+const roadTripRoutes = require('./Routes/roadtrip.Routes.js')
+const reviewRoutes = require('./Routes/review.Routes.js');
+const weatherRoutes = require('./Routes/weather.Routes.js'); 
+const authRoutes = require('./Routes/auth.Routes.js');
+const commentRoutes = require('./Routes/comment.Routes.js');
+const routeRoutes = require('./Routes/route.Routes.js');
+const placesRoutes = require('./Routes/Places.Routes.js');
+
+// Logger middleware 
+const logger = require('./Middlewares/logger.Middlewares.js'); 
+
+// Express app initialize 
+const app = express();
+const PORT = process.env.PORT || 5000; 
+
+app.use(
+  cors({
+    origin: [
+      "https://road-trip-planner-alpha.vercel.app"
+    ],
+    credentials: true,
+  })
+);
+
+// Middleware to parse JSON with size limit
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+app.use(logger); 
+
+// Database Connection with better error handling
+mongoose.connect(process.env.MONGODB_CONNECTION_STRING  )
+.then(() => console.log('✅ MongoDB connected successfully!'))
+.catch(err => {
+    console.error('❌ MongoDB connection error:', err);
+    process.exit(1);
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'OK', 
+        message: 'Road Trip Planner API is running',
+        timestamp: new Date().toISOString()
+    });
+});
+
+// API Routes use 
+app.use('/api/users', userRoutes);
+app.use('/api/roadtrips', roadTripRoutes);
+app.use('/api/reviews', reviewRoutes);
+app.use('/api/weather', weatherRoutes);
+app.use('/api/auth', authRoutes); 
+app.use('/api/comments', commentRoutes);
+app.use('/api/route', routeRoutes);
+app.use('/api/places', placesRoutes);
+
+// Global error handler
+app.use((err, req, res, next) => {
+    console.error('Global Error Handler:', err);
+    res.status(500).json({
+        message: 'Something went wrong!',
+        error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ message: "Route Not Found" });
+});
+
+// Server listen with graceful shutdown
+const server = app.listen(PORT, () => {
+    console.log(`🚀 Server is running on port ${PORT}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('🛑 SIGTERM signal received, shutting down gracefully');
+    server.close(() => {
+        console.log('✅ HTTP server closed');
+        mongoose.connection.close(false, () => {
+            console.log('✅ MongoDB connection closed');
+            process.exit(0);
+        });
+    });
+});
+
+
+/* ========= File: merge-project.js ========= */
+
+// merge-project.js
+const fs = require("fs");
+const path = require("path");
+
+const outputFile = "merged-project.txt"; // Final merged file
+const rootDir = process.cwd();           // Current working folder
+
+// Files / folders to exclude
+const exclude = [
+  "node_modules",
+  ".git",
+  ".env",
+  "dist",
+  "build",
+  "coverage",
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "merged-project.txt"
+];
+
+// Allowed code file extensions
+const allowedExts = [".js", ".ts", ".jsx", ".tsx", ".json", ".html", ".css", ".md"];
+
+// Recursive function to walk and collect files
+function walkDir(dir, fileList = []) {
+  const files = fs.readdirSync(dir);
+  for (const file of files) {
+    const fullPath = path.join(dir, file);
+    const stat = fs.statSync(fullPath);
+
+    if (exclude.includes(file)) {
+      continue;
+    }
+
+    if (stat.isDirectory()) {
+      walkDir(fullPath, fileList);
+    } else {
+      const ext = path.extname(fullPath).toLowerCase();
+      if (allowedExts.includes(ext)) {
+        fileList.push(fullPath);
+      }
+    }
+  }
+  return fileList;
+}
+
+// Merge files into one
+function mergeFiles(files) {
+  let mergedContent = "";
+
+  files.forEach(file => {
+    const relPath = path.relative(rootDir, file);
+    const content = fs.readFileSync(file, "utf-8");
+    mergedContent += `\n\n/* ========= File: ${relPath} ========= */\n\n${content}\n`;
+  });
+
+  fs.writeFileSync(outputFile, mergedContent, "utf-8");
+  console.log(`✅ Project merged into ${outputFile}`);
+}
+
+// Run script
+const allFiles = walkDir(rootDir);
+mergeFiles(allFiles);
+
+
+
+/* ========= File: Middlewares\auth.Middlewares.js ========= */
+
+const jwt = require('jsonwebtoken');
+const User = require('../Models/User.Models.js');
+
+module.exports = async function(req, res, next) {
+    // Extract token from either the 'x-auth-token' header or 'Authorization' header
+    const tokenFromHeader = req.header('x-auth-token') || req.header('Authorization');
+
+    if (!tokenFromHeader) {
+        return res.status(401).json({ message: 'No token provided. Authorization denied.' });
+    }
+
+    // Standardize token format by removing "Bearer " prefix if it exists
+    const token = tokenFromHeader.startsWith('Bearer ') ? tokenFromHeader.slice(7) : tokenFromHeader;
+
+    try {
+        // Verify token and decode payload
+        const payload = jwt.verify(token, process.env.JWT_SECRET);
+
+        // Fetch user from database and check for existence and activity
+        const authenticatedUser = await User.findById(payload.user.id).select('-password -__v');
+        
+        if (!authenticatedUser) {
+            return res.status(401).json({ message: 'User account not found. Authorization denied.' });
+        }
+
+        if (authenticatedUser.isDeactivated) {
+            return res.status(401).json({ message: 'User account is inactive. Authorization denied.' });
+        }
+
+        // Attach user info to the request object for downstream use
+        req.user = payload.user;
+        req.userAccount = authenticatedUser;
+        next();
+    } catch (err) {
+        if (err.name === 'TokenExpiredError') {
+            return res.status(401).json({ message: 'Session expired. Please log in again.' });
+        }
+        
+        if (err.name === 'JsonWebTokenError') {
+            return res.status(401).json({ message: 'Invalid token. Authorization denied.' });
+        }
+        
+        console.error('Authentication middleware error:', err.message);
+        return res.status(500).json({ message: 'Server error during authentication.' });
+    }
+};
+
+
+/* ========= File: Middlewares\logger.Middlewares.js ========= */
+
+const fs = require('fs/promises');
+const path = require('path');
+const onFinished = require('on-finished');
+
+// Create logs directory if it doesn't exist.
+const logsDir = path.join(__dirname, '../logs');
+
+// Asynchronous function to ensure the logs directory exists.
+const ensureLogsDir = async () => {
+    try {
+        await fs.mkdir(logsDir, { recursive: true });
+    } catch (err) {
+        console.error('Failed to create logs directory:', err);
+    }
+};
+
+// Immediately call the function to create the directory.
+ensureLogsDir();
+
+const logger = (req, res, next) => {
+    // Record the start time of the request.
+    const startTime = process.hrtime();
+
+    // Log the incoming request to the console.
+    const incomingLog = `[${new Date().toISOString()}] Incoming Request: ${req.method} ${req.originalUrl} from ${req.ip}`;
+    console.log(incomingLog);
+
+    // Use on-finished to log the response after it has been sent.
+    onFinished(res, async (err) => {
+        const [seconds, nanoseconds] = process.hrtime(startTime);
+        const responseTimeMs = (seconds * 1000) + (nanoseconds / 1e6);
+        const logTimestamp = new Date().toISOString();
+        const statusCode = res.statusCode;
+        const statusMessage = res.statusMessage || '';
+
+        const finishedLog = `[${logTimestamp}] Response: ${req.method} ${req.originalUrl} - Status: ${statusCode} ${statusMessage} - Duration: ${responseTimeMs.toFixed(2)}ms`;
+        console.log(finishedLog);
+
+        if (process.env.NODE_ENV === 'production') {
+            const logEntry = `${incomingLog}\n${finishedLog}\n`;
+            const logFile = path.join(logsDir, `access-${logTimestamp.split('T')[0]}.log`);
+            
+            try {
+                await fs.appendFile(logFile, logEntry);
+            } catch (writeErr) {
+                console.error('Error writing to log file:', writeErr);
+            }
+        }
+    });
+
+    next();
+};
+
+module.exports = logger;
+
+
+/* ========= File: Middlewares\rateLimiter.Middlewares.js ========= */
+
+const rateLimitMap = new Map();
+
+const rateLimiter = (windowMs = 15 * 60 * 1000, maxRequests = 100) => {
+    return (req, res, next) => {
+        const clientId = req.ip || req.connection.remoteAddress;
+        const now = Date.now();
+
+        // Get the client's data or initialize it if it's a new client
+        let clientData = rateLimitMap.get(clientId);
+
+        if (!clientData || now > clientData.resetTime) {
+            // Reset the counter if it's a new client or the window has expired
+            clientData = {
+                count: 0,
+                resetTime: now + windowMs,
+            };
+            rateLimitMap.set(clientId, clientData);
+        }
+
+        clientData.count++;
+
+        if (clientData.count > maxRequests) {
+            const retryAfterSeconds = Math.ceil((clientData.resetTime - now) / 1000);
+            return res.status(429).json({
+                message: 'Too many requests. Please try again later.',
+                retryAfter: retryAfterSeconds,
+            });
+        }
+
+        next();
+    };
+};
+
+module.exports = rateLimiter;
+
+
+/* ========= File: Models\comment.models.js ========= */
+
+const mongoose = require('mongoose');
+
+const CommentSchema = new mongoose.Schema({
+    text: {
+        type: String,
+        required: [true, 'Comment text is required'],
+        trim: true,
+        minlength: [1, 'Comment cannot be empty'],
+        maxlength: [500, 'Comment cannot exceed 500 characters']
+    },
+    user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    roadTrip: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'RoadTrip',
+        required: true
+    },
+    parentComment: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Comment',
+        default: null
+    },
+    replies: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Comment'
+    }],
+    likes: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
+    isEdited: {
+        type: Boolean,
+        default: false
+    },
+    editedAt: {
+        type: Date,
+        default: null
+    }
+}, { 
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+});
+
+// Indexes for performance
+CommentSchema.index({ roadTrip: 1 });
+CommentSchema.index({ user: 1 });
+CommentSchema.index({ createdAt: -1 });
+CommentSchema.index({ parentComment: 1 });
+
+// Virtual for like count
+CommentSchema.virtual('likeCount').get(function() {
+    return this.likes ? this.likes.length : 0;
+});
+
+// Virtual for reply count
+CommentSchema.virtual('replyCount').get(function() {
+    return this.replies ? this.replies.length : 0;
+});
+
+// Pre-save middleware to handle editing
+CommentSchema.pre('save', function(next) {
+    if (this.isModified('text') && !this.isNew) {
+        this.isEdited = true;
+        this.editedAt = new Date();
+    }
+    next();
+});
+
+module.exports = mongoose.model('Comment', CommentSchema);
+
+
+/* ========= File: Models\Review.models.js ========= */
+
+const mongoose = require('mongoose');
+
+const ReviewSchema = new mongoose.Schema({
+    comment: {
+        type: String,
+        required: [true, 'Review comment is required'],
+        trim: true,
+        minlength: [5, 'Review comment must be at least 5 characters long'],
+        maxlength: [1000, 'Review comment cannot exceed 1000 characters']
+    },
+    rating: {
+        type: Number,
+        required: [true, 'Rating is required'],
+        min: [1, 'Rating must be at least 1'],
+        max: [5, 'Rating cannot exceed 5']
+    },
+    user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    roadTrip: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'RoadTrip',
+        required: true
+    },
+    helpful: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
+    images: [{
+        type: String
+    }],
+    tripDate: {
+        type: Date,
+        default: null
+    },
+    travelType: {
+        type: String,
+        enum: ['Solo', 'Couple', 'Family', 'Friends', 'Business'],
+        default: 'Solo'
+    },
+    verified: {
+        type: Boolean,
+        default: false
+    },
+    isEdited: {
+        type: Boolean,
+        default: false
+    },
+    editedAt: {
+        type: Date,
+        default: null
+    }
+}, { 
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+});
+
+// Compound index to ensure one review per user per trip
+ReviewSchema.index({ user: 1, roadTrip: 1 }, { unique: true });
+
+// Other indexes for performance
+ReviewSchema.index({ roadTrip: 1 });
+ReviewSchema.index({ rating: -1 });
+ReviewSchema.index({ createdAt: -1 });
+
+// Virtual for helpful count
+ReviewSchema.virtual('helpfulCount').get(function() {
+    return this.helpful ? this.helpful.length : 0;
+});
+
+// Pre-save middleware to handle editing
+ReviewSchema.pre('save', function(next) {
+    if ((this.isModified('comment') || this.isModified('rating')) && !this.isNew) {
+        this.isEdited = true;
+        this.editedAt = new Date();
+    }
+    next();
+});
+
+// Static method to calculate average rating for a trip
+ReviewSchema.statics.calculateAverageRating = async function(roadTripId) {
+    const result = await this.aggregate([
+        { $match: { roadTrip: roadTripId } },
+        {
+            $group: {
+                _id: null,
+                averageRating: { $avg: '$rating' },
+                totalReviews: { $sum: 1 }
+            }
+        }
+    ]);
+
+    return result[0] || { averageRating: 0, totalReviews: 0 };
+};
+
+const Review = mongoose.model('Review', ReviewSchema);
+module.exports = Review;
+
+
+/* ========= File: Models\Roadtrip.models.js ========= */
+
+const mongoose = require('mongoose');
+
+const RoadTripSchema = new mongoose.Schema({
+    title: {
+        type: String,
+        required: [true, 'Title is required'],
+        trim: true,
+        minlength: [3, 'Title must be at least 3 characters long'],
+        maxlength: [100, 'Title cannot exceed 100 characters']
+    },
+    description: {
+        type: String,
+        required: [true, 'Description is required'],
+        trim: true,
+        minlength: [10, 'Description must be at least 10 characters long'],
+        maxlength: [2000, 'Description cannot exceed 2000 characters']
+    },
+    coverImage: {
+        type: String,
+        default: '/default_cover_image.jpg'
+    },
+    images: [{ 
+        type: String
+    }],
+    route: [{
+        locationName: {
+            type: String,
+            required: true,
+            trim: true
+        },
+        description: {
+            type: String,
+            trim: true,
+            default: ''
+        },
+        coordinates: {
+            latitude: Number,
+            longitude: Number
+        },
+        estimatedDuration: String, // e.g., "2 hours"
+        attractions: [String]
+    }],
+    tags: [{
+        type: String,
+        trim: true,
+        lowercase: true,
+        maxlength: [30, 'Tag cannot exceed 30 characters']
+    }],
+    difficulty: {
+        type: String,
+        enum: ['Easy', 'Medium', 'Hard', 'Expert'],
+        default: 'Medium'
+    },
+    duration: {
+        type: String,
+        trim: true // e.g., "3-5 days"
+    },
+    season: [{
+        type: String,
+        enum: ['Spring', 'Summer', 'Autumn', 'Winter']
+    }],
+    budget: {
+        min: {
+            type: Number,
+            min: 0
+        },
+        max: {
+            type: Number,
+            min: 0
+        },
+        currency: {
+            type: String,
+            default: 'USD',
+            uppercase: true
+        }
+    },
+    createdBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    likes: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
+    saves: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
+    reviews: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Review'
+    }],
+    comments: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Comment'
+    }],
+    views: {
+        type: Number,
+        default: 0
+    },
+    isPublic: {
+        type: Boolean,
+        default: true
+    },
+    isFeatured: {
+        type: Boolean,
+        default: false
+    },
+    status: {
+        type: String,
+        enum: ['draft', 'published', 'archived'],
+        default: 'published'
+    }
+}, { 
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+});
+
+// Indexes for performance
+RoadTripSchema.index({ createdBy: 1 });
+RoadTripSchema.index({ createdAt: -1 });
+RoadTripSchema.index({ title: 'text', description: 'text' });
+RoadTripSchema.index({ tags: 1 });
+RoadTripSchema.index({ 'route.locationName': 1 });
+RoadTripSchema.index({ likes: 1 });
+RoadTripSchema.index({ isPublic: 1, status: 1 });
+
+// Virtual for like count
+RoadTripSchema.virtual('likeCount').get(function() {
+    return this.likes ? this.likes.length : 0;
+});
+
+// Virtual for comment count  
+RoadTripSchema.virtual('commentCount').get(function() {
+    return this.comments ? this.comments.length : 0;
+});
+
+// Virtual for review count
+RoadTripSchema.virtual('reviewCount').get(function() {
+    return this.reviews ? this.reviews.length : 0;
+});
+
+// Virtual for average rating
+RoadTripSchema.virtual('averageRating').get(function() {
+    // This would need to be populated or calculated separately
+    return this.avgRating || 0;
+});
+
+// Pre-save middleware to update tags
+RoadTripSchema.pre('save', function(next) {
+    if (this.tags && this.tags.length > 0) {
+        this.tags = this.tags.map(tag => tag.toLowerCase().trim()).filter(tag => tag.length > 0);
+        // Remove duplicates
+        this.tags = [...new Set(this.tags)];
+    }
+    next();
+});
+
+// Method to increment views
+RoadTripSchema.methods.incrementViews = function() {
+    this.views = (this.views || 0) + 1;
+    return this.save();
+};
+
+const RoadTrip = mongoose.model('RoadTrip', RoadTripSchema);
+module.exports = RoadTrip;
+
+
+/* ========= File: Models\User.models.js ========= */
+
+const mongoose = require('mongoose');
+
+const UserSchema = new mongoose.Schema({
+    name: {
+        type: String,
+        required: [true, 'Name is required'],
+        trim: true,
+        minlength: [2, 'Name must be at least 2 characters long'],
+        maxlength: [50, 'Name cannot exceed 50 characters']
+    },
+    username: {
+        type: String,
+        required: [true, 'Username is required'],
+        unique: true, // ✅ already creates index
+        trim: true,
+        lowercase: true,
+        minlength: [3, 'Username must be at least 3 characters long'],
+        maxlength: [20, 'Username cannot exceed 20 characters'],
+        match: [/^[a-zA-Z0-9_]+$/, 'Username can only contain letters, numbers, and underscores']
+    },
+    email: {
+        type: String,
+        required: [true, 'Email is required'],
+        unique: true, // ✅ already creates index
+        trim: true,
+        lowercase: true,
+        match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Please enter a valid email address']
+    },
+    password: {
+        type: String,
+        required: [true, 'Password is required'],
+        minlength: [6, 'Password must be at least 6 characters long']
+    },
+    avatar: {
+        type: String,
+        default: null
+    },
+    bio: {
+        type: String,
+        maxlength: [500, 'Bio cannot exceed 500 characters'],
+        default: ''
+    },
+    isVerified: {
+        type: Boolean,
+        default: false
+    },
+    isActive: {
+        type: Boolean,
+        default: true
+    },
+    lastLogin: {
+        type: Date,
+        default: null
+    },
+    createdTrips: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'RoadTrip'
+    }],
+    savedTrips: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'RoadTrip'
+    }],
+    followers: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
+    following: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }]
+}, { 
+    timestamps: true,
+    toJSON: {
+        transform: function(doc, ret) {
+            delete ret.password;
+            return ret;
+        }
+    }
+});
+
+// ✅ Only keep the extra index you really need
+UserSchema.index({ createdAt: -1 });
+
+// Virtuals
+UserSchema.virtual('followerCount').get(function() {
+    return this.followers ? this.followers.length : 0;
+});
+
+UserSchema.virtual('followingCount').get(function() {
+    return this.following ? this.following.length : 0;
+});
+
+const User = mongoose.model('User', UserSchema);
+module.exports = User;
+
+
+
+/* ========= File: package.json ========= */
+
+
+{
+  "name": "road-trip-planner-backend",
+  "version": "1.0.0",
+  "description": "Enhanced Road Trip Planner Backend API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["roadtrip", "travel", "planner", "nodejs", "express", "mongodb"],
+  "author": "Road Trip Planner Team",
+  "license": "MIT",
+  "dependencies": {
+    "@mapbox/polyline": "^1.2.1",
+    "axios": "^1.11.0",
+    "bcryptjs": "^3.0.2",
+    "cloudinary": "^2.7.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.18.0",
+    "multer": "^2.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
+
+
+
+/* ========= File: Routes\auth.Routes.js ========= */
+
+const express = require('express');
+const router = express.Router();
+const authController = require('../Controllers/Auth.Controllers.js');
+const authMiddleware = require('../Middlewares/auth.Middlewares.js');
+
+// Public routes
+router.post('/register', authController.register);
+router.post('/login', authController.login);
+
+// Protected routes
+router.get('/profile', authMiddleware, authController.getProfile);
+
+module.exports = router;
+
+
+/* ========= File: Routes\comment.Routes.js ========= */
+
+const express = require('express');
+const router = express.Router();
+const commentController = require('../Controllers/Comment.Controllers.js');
+const authMiddleware = require('../Middlewares/auth.Middlewares.js');
+
+// Public routes
+router.get('/:tripId', commentController.getCommentsForTrip);
+
+// Protected routes
+router.post('/:tripId', authMiddleware, commentController.createComment);
+router.put('/:commentId', authMiddleware, commentController.updateComment);
+router.delete('/:commentId', authMiddleware, commentController.deleteComment);
+
+module.exports = router;
+
+
+/* ========= File: Routes\places.Routes.js ========= */
+
+
+const express = require('express');
+const router = express.Router();
+const placesController = require('../Controllers/Places.Controllers.js');
+const authMiddleware = require('../Middlewares/auth.Middlewares.js');
+
+// Protected routes
+router.get('/', authMiddleware, placesController.getNearbyPlaces);
+
+module.exports = router;
+
+
+
+/* ========= File: Routes\review.Routes.js ========= */
+
+const express = require('express');
+const router = express.Router();
+const reviewController = require('../Controllers/Review.Controllers.js');
+const authMiddleware = require('../Middlewares/auth.Middlewares.js');
+// Public routes
+router.get('/trip/:tripId', reviewController.getUserReviews);
+
+
+// Protected routes
+router.post('/:tripId', authMiddleware, reviewController.createReview);
+router.put('/:reviewId', authMiddleware, reviewController.updateReview);
+router.delete('/:reviewId', authMiddleware, reviewController.deleteReview);
+
+module.exports = router;
+
+
+/* ========= File: Routes\roadtrip.Routes.js ========= */
+
+const express = require('express');
+const router = express.Router();
+const roadTripController = require('../Controllers/Roadtrip.Controllers.js');
+const authMiddleware = require('../Middlewares/auth.Middlewares.js');
+const upload = require('../Config/Multer.js');
+
+// Public routes
+router.get('/', roadTripController.getAllRoadTrips);
+router.get('/search', roadTripController.searchTrips);
+router.get('/:id', roadTripController.getTripById);
+
+// Protected routes
+router.get('/user/mytrips', authMiddleware, roadTripController.getMyTrips);
+router.post('/', authMiddleware, upload.array('images', 5), roadTripController.createRoadTrip);
+router.put('/:id', authMiddleware, upload.array('images', 5), roadTripController.updateRoadTrip);
+router.delete('/:id', authMiddleware, roadTripController.deleteRoadTrip);
+router.put('/:id/like', authMiddleware, roadTripController.likeTrip);
+
+module.exports = router;
+
+
+/* ========= File: Routes\route.Routes.js ========= */
+
+const express = require('express');
+const router = express.Router();
+const routeController = require('../Controllers/Route.Controllers.js');
+const authMiddleware = require('../Middlewares/auth.Middlewares.js');
+
+// Protected routes
+router.post('/', authMiddleware, routeController.getRoute);
+
+module.exports = router;
+
+
+/* ========= File: Routes\user.Routes.js ========= */
+
+const express = require('express');
+const router = express.Router();
+const userController = require('../Controllers/User.Controllers.js');
+const authMiddleware = require('../Middlewares/auth.Middlewares.js');
+
+// Public routes
+router.get('/profile/:id', userController.getUserProfile);
+
+// Protected routes (admin only - should add admin middleware)
+router.post('/', userController.createUser);
+router.get('/', userController.getAllUsers);
+router.put('/:id', authMiddleware, userController.updateUser);
+router.delete('/:id', authMiddleware, userController.deleteUser);
+
+module.exports = router;
+
+
+/* ========= File: Routes\weather.Routes.js ========= */
+
+const express = require('express');
+const router = express.Router();
+const weatherController = require('../Controllers/Weather.Controllers.js'); 
+
+// Public routes
+router.get('/', weatherController.getWeatherByLocation);
+router.get('/forecast', weatherController.getWeatherForecast);
+
+module.exports = router;

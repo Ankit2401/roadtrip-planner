@@ -1,0 +1,33 @@
+
+{
+  "name": "road-trip-planner-backend",
+  "version": "1.0.0",
+  "description": "Enhanced Road Trip Planner Backend API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["roadtrip", "travel", "planner", "nodejs", "express", "mongodb"],
+  "author": "Road Trip Planner Team",
+  "license": "MIT",
+  "dependencies": {
+    "@mapbox/polyline": "^1.2.1",
+    "axios": "^1.11.0",
+    "bcryptjs": "^3.0.2",
+    "cloudinary": "^2.7.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.18.0",
+    "multer": "^2.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

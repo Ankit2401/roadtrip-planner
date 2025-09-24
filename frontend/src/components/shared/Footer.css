@@ -1,0 +1,12 @@
+/* Footer.jsx Specific Styles */
+.main-footer {
+  background-color: var(--text-color);
+  color: #fff;
+  padding: 1rem;
+  text-align: center;
+  margin-top: 2rem;
+}
+
+.main-footer .container {
+  padding: 0;
+}
