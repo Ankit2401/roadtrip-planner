@@ -11,7 +11,7 @@ const weatherRoutes = require('./Routes/weather.Routes.js');
 const authRoutes = require('./Routes/auth.Routes.js');
 const commentRoutes = require('./Routes/comment.Routes.js');
 const routeRoutes = require('./Routes/route.Routes.js');
-const placesRoutes = require('./Routes/Places.Routes.js');
+const placesRoutes = require('./Routes/places.Routes.js');
 
 // Logger middleware 
 const logger = require('./Middlewares/logger.Middlewares.js'); 
