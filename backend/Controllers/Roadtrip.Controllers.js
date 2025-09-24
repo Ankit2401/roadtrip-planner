@@ -1,4 +1,4 @@
-const RoadTrip = require('../Models/RoadTrip.Models.js');
+const RoadTrip = require('../Models/RoadTrip.models.js');
 const cloudinary = require('../config/cloudinary.js');
 const mongoose = require('mongoose');
 

@@ -1,5 +1,5 @@
-const Comment = require('../Models/Comment.Models.js');
-const RoadTrip = require('../Models/RoadTrip.Models.js');
+const Comment = require('../Models/Comment.models.js');
+const RoadTrip = require('../Models/RoadTrip.models.js');
 
 // Helper function for consistent server error responses
 const handleServerError = (res, err, message) => {

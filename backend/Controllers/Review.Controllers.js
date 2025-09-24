@@ -1,4 +1,4 @@
-const Review = require('../Models/Review.Models');
+const Review = require('../Models/Review.models');
 
 // READ all reviews for the authenticated user
 exports.getUserReviews = async (req, res) => {
