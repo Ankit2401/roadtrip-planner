@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../Models/User.Models.js');
+const User = require('../Models/User.models.js');
 
 module.exports = async function(req, res, next) {
     // Extract token from either the 'x-auth-token' header or 'Authorization' header

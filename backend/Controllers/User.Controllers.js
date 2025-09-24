@@ -1,4 +1,4 @@
-const User = require('../Models/User.Models');
+const User = require('../Models/User.models');
 const bcrypt = require('bcryptjs');
 
 // Helper function for consistent server error responses
